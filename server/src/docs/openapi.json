@@ -1,0 +1,747 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "GroupPick API",
+    "version": "1.0.0",
+    "description": "Universal group-decision engine API featuring private budgets, fairness ledgers, multi-criteria Pareto optimization, and plug-in Decision Packs."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Local development server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token for registered organizers or guestToken for members"
+      },
+      "MemberToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-member-token",
+        "description": "Guest member session token"
+      },
+      "OrganizerToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-organizer-token",
+        "description": "Unique organizer key for anonymous group creators"
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "details": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["error"]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MemberPublic": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string" },
+          "displayName": { "type": "string" },
+          "avatarColor": { "type": "string" },
+          "isOrganizer": { "type": "boolean" },
+          "hasResponded": { "type": "boolean" },
+          "joinedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string" },
+          "code": { "type": "string", "example": "PICK-4921" },
+          "title": { "type": "string", "example": "Friday Dinner with Flatmates" },
+          "packId": { "type": "string", "enum": ["food", "trip", "custom"] },
+          "packConfig": {
+            "type": "object",
+            "properties": {
+              "city": { "type": "string" },
+              "centerLocation": {
+                "type": "object",
+                "properties": {
+                  "lat": { "type": "number" },
+                  "lng": { "type": "number" }
+                }
+              },
+              "customOptions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "cost": { "type": "number" },
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "status": { "type": "string", "enum": ["collecting", "decided", "confirmed"] },
+          "strategy": { "type": "string", "enum": ["utilitarian", "maximin", "nash", "borda"] },
+          "latestDecisionId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GroupStatus": {
+        "type": "object",
+        "description": "Public aggregated status without leaking individual budgets",
+        "properties": {
+          "totalMembers": { "type": "integer", "example": 4 },
+          "respondedCount": { "type": "integer", "example": 3 },
+          "allResponded": { "type": "boolean", "example": false },
+          "status": { "type": "string", "example": "collecting" },
+          "feasibleBudgetRange": {
+            "type": "object",
+            "properties": {
+              "min": { "type": "number", "example": 15 },
+              "max": { "type": "number", "example": 40 },
+              "groupCeiling": { "type": "number", "example": 35 }
+            }
+          },
+          "members": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/MemberPublic" }
+          }
+        }
+      },
+      "PreferenceSubmission": {
+        "type": "object",
+        "required": ["budget"],
+        "properties": {
+          "budget": { "type": "number", "example": 35, "description": "PRIVATE: Never sent to other members" },
+          "hardLimits": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["vegan", "wheelchair"]
+          },
+          "softWishes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["outdoor-seating", "craft-beer"]
+          },
+          "rankedPicks": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["osm-paris-food-1", "osm-paris-food-4"]
+          },
+          "customNotes": { "type": "string", "example": "Can't stay past 10 PM" }
+        }
+      },
+      "DecisionResult": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string" },
+          "groupId": { "type": "string" },
+          "packId": { "type": "string" },
+          "status": { "type": "string", "enum": ["draft", "confirmed"] },
+          "confirmedOptionId": { "type": "string" },
+          "strategyUsed": { "type": "string" },
+          "options": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "properties": {
+                "optionId": { "type": "string" },
+                "optionType": { "type": "string" },
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "costPerPerson": { "type": "number" },
+                "archetype": { "type": "string", "enum": ["best_overall", "fairest_to_everyone", "most_budget_friendly"] },
+                "overallScore": { "type": "number" },
+                "minSatisfaction": { "type": "number" },
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "headline": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "whyThis": { "type": "string" },
+                    "pros": { "type": "array", "items": { "type": "string" } },
+                    "compromises": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "memberSatisfactions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "memberId": { "type": "string" },
+                      "displayName": { "type": "string" },
+                      "score": { "type": "number" },
+                      "weightApplied": { "type": "number" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "summary": "Register a new organizer account",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "email", "password"],
+                "properties": {
+                  "name": { "type": "string", "example": "Sarah Connor" },
+                  "email": { "type": "string", "format": "email", "example": "sarah@example.com" },
+                  "password": { "type": "string", "format": "password", "example": "securePassword123" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Registered successfully", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" }, "token": { "type": "string" } } } } } },
+          "400": { "description": "Validation error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Email already registered" }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "summary": "Organizer login",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "sarah@example.com" },
+                  "password": { "type": "string", "format": "password", "example": "securePassword123" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Login successful", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" }, "token": { "type": "string" } } } } } },
+          "401": { "description": "Invalid credentials" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Get authenticated organizer profile",
+        "tags": ["Auth"],
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Current user profile", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/groups": {
+      "post": {
+        "summary": "Create a new decision group",
+        "tags": ["Groups"],
+        "security": [{ "BearerAuth": [] }, {}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "packId", "organizerName"],
+                "properties": {
+                  "title": { "type": "string", "example": "Friday Flat Dinner" },
+                  "packId": { "type": "string", "enum": ["food", "trip", "custom"], "example": "food" },
+                  "organizerName": { "type": "string", "example": "Alex" },
+                  "packConfig": {
+                    "type": "object",
+                    "properties": {
+                      "city": { "type": "string", "example": "Paris" },
+                      "date": { "type": "string", "example": "2025-10-15" },
+                      "customOptions": { "type": "array", "items": { "type": "object" } }
+                    }
+                  },
+                  "strategy": { "type": "string", "enum": ["utilitarian", "maximin", "nash", "borda"], "default": "utilitarian" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Group created with shareable code and organizer member token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "group": { "$ref": "#/components/schemas/Group" },
+                    "member": { "$ref": "#/components/schemas/MemberPublic" },
+                    "guestToken": { "type": "string" },
+                    "organizerToken": { "type": "string" },
+                    "shareUrl": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{id}": {
+      "get": {
+        "summary": "Get group details and public member list (zero private data)",
+        "tags": ["Groups"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Group ID or unique Code" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group metadata and members",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "group": { "$ref": "#/components/schemas/Group" },
+                    "members": { "type": "array", "items": { "$ref": "#/components/schemas/MemberPublic" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Group not found" }
+        }
+      }
+    },
+    "/api/groups/{id}/join": {
+      "post": {
+        "summary": "Join a group with just a name (no signup required)",
+        "tags": ["Groups"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Group ID or Code" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["displayName"],
+                "properties": {
+                  "displayName": { "type": "string", "example": "Sarah" },
+                  "avatarColor": { "type": "string", "example": "#10B981" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Joined group successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": { "$ref": "#/components/schemas/MemberPublic" },
+                    "guestToken": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Group not found" }
+        }
+      }
+    },
+    "/api/groups/{id}/preferences": {
+      "put": {
+        "summary": "Submit or update member's private preferences (authenticated by guest token)",
+        "tags": ["Preferences"],
+        "security": [{ "MemberToken": [] }, { "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PreferenceSubmission" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preferences saved securely. Private data is never shared with peers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "message": { "type": "string" },
+                    "hasResponded": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized member" }
+        }
+      }
+    },
+    "/api/groups/{id}/status": {
+      "get": {
+        "summary": "Get group response progress and aggregated feasible budget ceiling (Zero private leakage)",
+        "tags": ["Groups"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated status with anonymous progress",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroupStatus" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{id}/decide": {
+      "post": {
+        "summary": "Run the decision engine to generate 3 explained options (Organizer only)",
+        "tags": ["Decisions"],
+        "security": [{ "OrganizerToken": [] }, { "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "strategy": { "type": "string", "enum": ["utilitarian", "maximin", "nash", "borda"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision completed with 3 explained Pareto options",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DecisionResult" }
+              }
+            }
+          },
+          "403": { "description": "Forbidden - Organizer privilege required" }
+        }
+      }
+    },
+    "/api/groups/{id}/decisions": {
+      "get": {
+        "summary": "Get list of decision results generated for this group",
+        "tags": ["Decisions"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of decisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/DecisionResult" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/decisions/{id}/confirm": {
+      "post": {
+        "summary": "Confirm the final selected option and update the Fairness Ledger for all members",
+        "tags": ["Decisions"],
+        "security": [{ "OrganizerToken": [] }, { "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["selectedOptionId"],
+                "properties": {
+                  "selectedOptionId": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Option confirmed and fairness ledger updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "decision": { "$ref": "#/components/schemas/DecisionResult" },
+                    "ledgerUpdates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "memberId": { "type": "string" },
+                          "displayName": { "type": "string" },
+                          "won": { "type": "boolean" },
+                          "previousWeight": { "type": "number" },
+                          "newWeight": { "type": "number" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/packs": {
+      "get": {
+        "summary": "Get list of available decision packs and their schemas",
+        "tags": ["Packs"],
+        "responses": {
+          "200": {
+            "description": "Available Decision Packs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": { "type": "string" },
+                      "name": { "type": "string" },
+                      "tagline": { "type": "string" },
+                      "description": { "type": "string" },
+                      "icon": { "type": "string" },
+                      "requiresExternalApi": { "type": "boolean" },
+                      "defaultConstraints": { "type": "array", "items": { "type": "string" } },
+                      "defaultWishes": { "type": "array", "items": { "type": "string" } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/destinations/search": {
+      "get": {
+        "summary": "Search-as-you-type Indian destinations via Photon Geocoder",
+        "tags": ["Destinations"],
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string", "example": "Pushkar" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 8 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of matching Indian destinations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string" },
+                      "state": { "type": "string" },
+                      "country": { "type": "string", "example": "India" },
+                      "lat": { "type": "number" },
+                      "lng": { "type": "number" },
+                      "bbox": { "type": "array", "items": { "type": "number" } },
+                      "displayName": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/destinations/popular": {
+      "get": {
+        "summary": "Get popular Indian destination chips",
+        "tags": ["Destinations"],
+        "responses": {
+          "200": {
+            "description": "List of 8 popular destinations in India",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string" },
+                      "state": { "type": "string" },
+                      "lat": { "type": "number" },
+                      "lng": { "type": "number" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/places": {
+      "get": {
+        "summary": "Get places around Indian destination (with 2dsphere MongoDB cache & Overpass)",
+        "tags": ["Places"],
+        "parameters": [
+          { "name": "destinationId", "in": "query", "schema": { "type": "string" } },
+          { "name": "destination", "in": "query", "schema": { "type": "string", "example": "Delhi" } },
+          { "name": "lat", "in": "query", "schema": { "type": "number" } },
+          { "name": "lng", "in": "query", "schema": { "type": "number" } },
+          { "name": "radius", "in": "query", "schema": { "type": "integer", "default": 5000 } },
+          { "name": "packType", "in": "query", "schema": { "type": "string", "enum": ["food", "trip", "both"], "default": "food" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Places response with caching source metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "places": { "type": "array", "items": { "type": "object" } },
+                    "source": { "type": "string", "enum": ["cache", "overpass", "fallback", "sparse"] },
+                    "radius": { "type": "integer" },
+                    "count": { "type": "integer" },
+                    "destination": { "type": "object" },
+                    "suggestion": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/places/{id}/report-price": {
+      "post": {
+        "summary": "Report actual price paid per person in INR",
+        "tags": ["Places"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": {
+                  "amount": { "type": "number", "example": 450 },
+                  "reportedBy": { "type": "string", "example": "Aarav" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Price report successfully recorded"
+          }
+        }
+      }
+    },
+    "/api/places/search": {
+      "get": {
+        "summary": "Search places by city, packType, and query with fallback support",
+        "tags": ["Places"],
+        "parameters": [
+          { "name": "city", "in": "query", "schema": { "type": "string", "default": "Delhi" } },
+          { "name": "packType", "in": "query", "schema": { "type": "string", "enum": ["food", "trip", "both"], "default": "food" } },
+          { "name": "query", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of matching places",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "_id": { "type": "string" },
+                      "name": { "type": "string" },
+                      "category": { "type": "string" },
+                      "city": { "type": "string" },
+                      "priceTier": { "type": "integer" },
+                      "priceSource": { "type": "string", "enum": ["estimated", "reported"] },
+                      "estimatedCostPerPerson": { "type": "number" },
+                      "rating": { "type": "number" },
+                      "attributes": { "type": "array", "items": { "type": "string" } },
+                      "location": {
+                        "type": "object",
+                        "properties": {
+                          "coordinates": { "type": "array", "items": { "type": "number" } }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

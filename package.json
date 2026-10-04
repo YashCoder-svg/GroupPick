@@ -1,0 +1,32 @@
+{
+  "name": "grouppick",
+  "version": "1.0.0",
+  "description": "Universal group-decision platform with private budgets, fairness ledger, and explainable multi-criteria consensus",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "start": "npm --workspace=server start",
+    "dev:server": "npm --workspace=server run dev",
+    "dev:client": "npm --workspace=client run dev",
+    "dev": "npx concurrently -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "test": "npm --workspace=server test",
+    "test:watch": "npm --workspace=server run test:watch",
+    "seed": "npm --workspace=server run seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
+  },
+  "keywords": [
+    "group-decision",
+    "fairness",
+    "consensus",
+    "pareto-optimal",
+    "social-choice",
+    "mern"
+  ],
+  "author": "GroupPick Team",
+  "license": "MIT"
+}
